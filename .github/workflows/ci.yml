@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies (best effort)
+        run: |
+          python -m pip install --upgrade pip
+          # Install runtime deps; if platform-specific ones fail, CI will still compile.
+          python -m pip install -r requirements.txt || true
+
+      - name: Syntax check
+        run: |
+          python -m py_compile main.py
+          python -m py_compile ui.py
+          # compile a couple key modules to catch syntax errors
+          python -m py_compile api/server.py api/status.py agent/executor.py agent/planner.py
+
+      - name: Tree-ish check (no secrets)
+        run: |
+          # Ensure common secret files are not present/committed.
+          test ! -f config/api_keys.json
+          test ! -f .env
+

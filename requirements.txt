@@ -1,0 +1,29 @@
+﻿beautifulsoup4
+# Windows-only dependencies (guarded by environment markers)
+comtypes; platform_system=="Windows"
+pycaw; platform_system=="Windows"
+pywinauto; platform_system=="Windows"
+# Cross-platform deps
+duckduckgo-search
+google-genai
+google-generativeai
+mss
+numpy
+opencv-python
+playwright
+Pillow
+psutil
+pyautogui
+pygetwindow
+pyperclip
+pyqt6
+python-pptx
+requests
+send2trash
+sounddevice
+youtube-transcript-api
+fastapi
+uvicorn[standard]
+keyring
+
+

@@ -1,0 +1,57 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Bytecode / cache
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Type check
+.mypy_cache/
+.dmypy.json
+
+# Lint
+.ruff_cache/
+
+# --- Environment / secrets ---
+.env
+.env.*
+
+# If your app uses this JSON for local config/secrets
+config/api_keys.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.suo
+*.user
+*.log
+
+# Local runtime artifacts
+*.db
+*.sqlite
+
+# Playwright
+playwright/.cache/
+
+# If you generate local status/log files
+jarvis.log
+status.json
+
