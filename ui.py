@@ -7779,11 +7779,11 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(16, 0, 16, 0)
         lay.setSpacing(0)
 
-        # ── Left: Stark Industries branding ──────────────────────────────────
+        # ── Left: AMD Creationz branding ────────────────────────────────────
         left_col = QVBoxLayout(); left_col.setSpacing(1)
         left_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        stark = QLabel("STARK INDUSTRIES")
+        stark = QLabel("AMD CREATIONZ")
         stark.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
         stark.setStyleSheet(f"color: {C.ENERGY}; background: transparent; letter-spacing: 2px;")
         left_col.addWidget(stark)
