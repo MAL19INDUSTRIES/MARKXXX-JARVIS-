@@ -29,9 +29,10 @@ found=0
 
 echo "🔍 Scanning staged changes for secrets..."
 
-# Check for blocked files
+# Check for blocked files. Deletions are allowed so previously committed
+# local-secret files can be removed from the repository.
 for blocked in "${BLOCKED_FILES[@]}"; do
-    if git diff --cached --name-only | grep -qF "$blocked"; then
+    if git diff --cached --name-status | grep -qE "^[AMCRTU][[:space:]]+$blocked$"; then
         echo -e "${RED}❌ BLOCKED: $blocked is in the commit. This file contains secrets and must not be committed.${NC}"
         echo "   Run: git reset HEAD $blocked"
         found=1
