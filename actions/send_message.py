@@ -1,4 +1,6 @@
 import json
+import io
+import re
 import subprocess
 import sys
 import time
@@ -18,6 +20,8 @@ try:
 except ImportError:
     _PYPERCLIP = False
 
+JARVIS_TEXT_FOOTER = "CREATED BY JARVIS"
+
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -33,6 +37,16 @@ def _get_os() -> str:
         return "windows"
 
 
+def _get_api_key() -> str:
+    try:
+        cfg = json.loads(
+            (_base_dir() / "config" / "api_keys.json").read_text(encoding="utf-8")
+        )
+        return cfg.get("gemini_api_key", "").strip()
+    except Exception:
+        return ""
+
+
 def _require_pyautogui():
     if not _PYAUTOGUI:
         raise RuntimeError("PyAutoGUI not installed. Run: pip install pyautogui")
@@ -45,12 +59,89 @@ def _paste_text(text: str) -> None:
     paste_hotkey = ("command", "v") if os_name == "mac" else ("ctrl", "v")
 
     if _PYPERCLIP:
-        pyperclip.copy(text)
-        time.sleep(0.15)
-        pyautogui.hotkey(*paste_hotkey)
-        time.sleep(0.1)
-    else:
-        pyautogui.write(text, interval=0.03)
+        try:
+            pyperclip.copy(text)
+            time.sleep(0.15)
+            pyautogui.hotkey(*paste_hotkey)
+            time.sleep(0.1)
+            return
+        except Exception as e:
+            print(f"[SendMessage] ⚠️ Clipboard paste failed, typing instead: {e}")
+    pyautogui.write(text, interval=0.03)
+
+
+def _type_text_visible(text: str, interval: float = 0.035) -> None:
+    """Type user-visible message text instead of pasting it from the clipboard."""
+    _require_pyautogui()
+    for ch in str(text or ""):
+        if ch == "\n":
+            pyautogui.hotkey("shift", "enter")
+            time.sleep(interval * 2)
+            continue
+        try:
+            pyautogui.write(ch, interval=interval)
+        except Exception:
+            # Last-resort fallback for characters PyAutoGUI cannot synthesize.
+            _paste_text(ch)
+        time.sleep(interval)
+
+
+def _screen_find(description: str, retries: int = 2, delay: float = 0.6) -> tuple[int, int] | None:
+    api_key = _get_api_key()
+    if not api_key:
+        print("[SendMessage] ⚠️ No Gemini key for screen vision.")
+        return None
+
+    for attempt in range(max(1, retries)):
+        try:
+            from google import genai
+            from google.genai import types as gtypes
+
+            _require_pyautogui()
+            w, h = pyautogui.size()
+            img = pyautogui.screenshot()
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+
+            prompt = (
+                f"You are controlling a {w}x{h} screen for JARVIS messaging. "
+                f"Find this exact UI target: {description}. "
+                "Prefer visible text fields, buttons, or list results in the active browser/app. "
+                "Return ONLY the center coordinate as x,y. If not visible, return NOT_FOUND."
+            )
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=[
+                    gtypes.Part.from_bytes(data=buf.getvalue(), mime_type="image/png"),
+                    prompt,
+                ],
+            )
+            text = (response.text or "").strip()
+            if "NOT_FOUND" not in text.upper():
+                match = re.search(r"(\d+)\s*,\s*(\d+)", text)
+                if match:
+                    return int(match.group(1)), int(match.group(2))
+        except Exception as e:
+            print(f"[SendMessage] ⚠️ screen_find failed: {e}")
+        time.sleep(delay * (attempt + 1))
+    return None
+
+
+def _vision_click(description: str, retries: int = 2, delay: float = 0.6) -> bool:
+    coords = _screen_find(description, retries=retries, delay=delay)
+    if not coords:
+        return False
+    pyautogui.click(coords[0], coords[1])
+    time.sleep(0.5)
+    return True
+
+
+def _with_jarvis_footer(text: str) -> str:
+    message = str(text or "").strip()
+    if JARVIS_TEXT_FOOTER.lower() in message.lower():
+        return message
+    return f"{message}\n\n{JARVIS_TEXT_FOOTER}"
 
 
 def _clear_and_paste(text: str) -> None:
@@ -143,11 +234,25 @@ def _desktop_send(app_name: str, receiver: str, message: str) -> str:
     pyautogui.press("enter")
     time.sleep(0.8)
 
-    _paste_text(message)
+    _type_text_visible(message)
     time.sleep(0.2)
     pyautogui.press("enter")
     time.sleep(0.3)
     return f"Message sent to {receiver} via {app_name}."
+
+
+def _send_current_app(receiver: str, message: str) -> str:
+    _require_pyautogui()
+    _vision_click(
+        "message composer text field in the currently open chat or messaging app",
+        retries=3,
+    )
+    _type_text_visible(message)
+    time.sleep(0.2)
+    pyautogui.press("enter")
+    time.sleep(0.3)
+    target = f" to {receiver}" if receiver else ""
+    return f"Message sent{target} in the current app."
 
 def _send_whatsapp(receiver: str, message: str) -> str:
     return _desktop_send("WhatsApp", receiver, message)
@@ -166,24 +271,34 @@ def _send_discord(receiver: str, message: str) -> str:
 def _send_instagram(receiver: str, message: str) -> str:
     _require_pyautogui()
 
-    if not _open_browser_url("https://www.instagram.com/direct/new/"):
+    if not _open_browser_url("https://www.instagram.com/direct/inbox/"):
         return "Could not open Instagram in browser."
 
+    if not _vision_click("Instagram Direct Messages new message button or compose message button", retries=3):
+        if not _open_browser_url("https://www.instagram.com/direct/new/"):
+            return "Could not open Instagram new message composer."
+        time.sleep(1.0)
+
+    _vision_click("Instagram recipient search field in the New Message dialog", retries=3)
     _paste_text(receiver)
     time.sleep(1.5)
 
-    pyautogui.press("down")
-    time.sleep(0.3)
-    pyautogui.press("enter")   
-    time.sleep(0.4)
+    if not _vision_click(f"Instagram recipient search result for '{receiver}'", retries=4):
+        pyautogui.press("down")
+        time.sleep(0.3)
+        pyautogui.press("enter")
+        time.sleep(0.4)
 
-    for _ in range(4):
-        pyautogui.press("tab")
-        time.sleep(0.15)
-    pyautogui.press("enter")
-    time.sleep(2.0)
+    if not _vision_click("Instagram Chat button or Next button to open the selected direct message", retries=3):
+        pyautogui.press("enter")
+        time.sleep(1.4)
 
-    _paste_text(message)
+    if not _vision_click("Instagram direct message text box or message composer input at the bottom of the chat", retries=5):
+        for _ in range(6):
+            pyautogui.press("tab")
+            time.sleep(0.12)
+
+    _type_text_visible(message)
     time.sleep(0.2)
     pyautogui.press("enter")
     time.sleep(0.3)
@@ -205,7 +320,7 @@ def _send_messenger(receiver: str, message: str) -> str:
     pyautogui.press("enter")
     time.sleep(1.0)
 
-    _paste_text(message)
+    _type_text_visible(message)
     time.sleep(0.2)
     pyautogui.press("enter")
     time.sleep(0.3)
@@ -213,6 +328,7 @@ def _send_messenger(receiver: str, message: str) -> str:
     return f"Message sent to {receiver} via Messenger."
 
 _PLATFORM_MAP = [
+    ({"current", "active", "focused", "frontmost", "any", "generic"}, _send_current_app),
     ({"whatsapp", "wp", "wapp"},              _send_whatsapp),
     ({"telegram", "tg"},                      _send_telegram),
     ({"instagram", "ig", "insta"},            _send_instagram),
@@ -240,14 +356,16 @@ def send_message(
     receiver     = params.get("receiver", "").strip()
     message_text = params.get("message_text", "").strip()
     platform     = params.get("platform", "whatsapp").strip()
+    platform_key = platform.lower().strip()
 
-    if not receiver:
+    if not receiver and platform_key not in {"current", "active", "focused", "frontmost", "any", "generic"}:
         return "Please specify a recipient."
     if not message_text:
         return "Please specify the message content."
     if not _PYAUTOGUI:
         return "PyAutoGUI is not installed — cannot control the desktop."
 
+    message_text = _with_jarvis_footer(message_text)
     preview = message_text[:50] + ("…" if len(message_text) > 50 else "")
     print(f"[SendMessage] 📨 {platform} → {receiver}: {preview}")
     if player:

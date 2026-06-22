@@ -4,6 +4,8 @@ import platform
 from pathlib import Path
 from datetime import datetime
 
+from actions.jarvis_file_stamp import write_sidecar_metadata, write_text_with_stamp
+
 try:
     import send2trash
     _SEND2TRASH = True
@@ -142,8 +144,12 @@ def create_file(path: str, name: str = "", content: str = "") -> str:
         if not _is_safe_path(target):
             return f"Access denied: {target}"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return f"File created: {target.name}"
+        write_text_with_stamp(
+            target,
+            content,
+            f"Created through JARVIS file_controller create_file action for {target.name}.",
+        )
+        return f"File saved: {target} ({target.stat().st_size} bytes)"
     except Exception as e:
         return f"Could not create file: {e}"
 
@@ -155,7 +161,7 @@ def create_folder(path: str, name: str = "") -> str:
         if not _is_safe_path(target):
             return f"Access denied: {target}"
         target.mkdir(parents=True, exist_ok=True)
-        return f"Folder created: {target.name}"
+        return f"Folder created: {target}"
     except Exception as e:
         return f"Could not create folder: {e}"
 
@@ -233,8 +239,12 @@ def copy_file(path: str, name: str = "", destination: str = "") -> str:
 
         if src.is_dir():
             shutil.copytree(str(src), str(dst))
+            for child in dst.rglob("*"):
+                if child.is_file() and not child.name.endswith(".jarvis_meta.json"):
+                    write_sidecar_metadata(child, f"Copied by JARVIS from {src}.")
         else:
             shutil.copy2(str(src), str(dst))
+            write_sidecar_metadata(dst, f"Copied by JARVIS from {src}.")
 
         return f"Copied: {src.name} → {dst.parent.name}/"
 
@@ -292,6 +302,14 @@ def write_file(path: str, name: str = "", content: str = "",
         if not _is_safe_path(target):
             return f"Access denied: {target}"
         target.parent.mkdir(parents=True, exist_ok=True)
+        existed_before = target.exists()
+        if not append or not existed_before:
+            write_text_with_stamp(
+                target,
+                content,
+                f"Written through JARVIS file_controller write action for {target.name}.",
+            )
+            return f"Written to: {target.name}"
         mode = "a" if append else "w"
         with open(target, mode, encoding="utf-8") as f:
             f.write(content)

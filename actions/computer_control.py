@@ -9,6 +9,8 @@ import time
 import random
 from pathlib import Path
 
+from actions.jarvis_file_stamp import mark_created_file
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -149,7 +151,6 @@ def _type(text: str, interval: float = 0.03) -> str:
     pyautogui.typewrite(text, interval=interval)
     return f"Typed: {text[:60]}{'…' if len(text) > 60 else ''}"
 
-
 def _smart_type(text: str, clear_first: bool = True) -> str:
     _require_pyautogui()
     if clear_first:
@@ -231,6 +232,7 @@ def _screenshot(save_path: str | None = None) -> str:
     path = _safe_screenshot_path(save_path)
     img  = pyautogui.screenshot()
     img.save(str(path))
+    mark_created_file(path, "Screenshot captured by JARVIS computer_control.")
     return f"Screenshot saved: {path}"
 
 

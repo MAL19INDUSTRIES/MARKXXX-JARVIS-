@@ -1,0 +1,7 @@
+{
+  "os_system": "mac",
+  "voice_name": "puck",
+  "tts_provider": "gemini",
+  "tts_voice_id": "puck",
+  "camera_index": 0
+}

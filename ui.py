@@ -24,8 +24,8 @@ from PyQt6.QtGui import (
     QPainterPath, QPen, QPixmap, QRadialGradient, QShortcut,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QCheckBox, QFormLayout, QFrame, QGraphicsOpacityEffect,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QPushButton,
+    QApplication, QComboBox, QCheckBox, QFileDialog, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QInputDialog, QMainWindow, QMenu, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QSystemTrayIcon, QTextEdit,
     QVBoxLayout, QWidget, QProgressBar,
 )
@@ -135,6 +135,12 @@ def route_jarvis_ui_command(text: str) -> tuple[str, str | None] | None:
         if any(x in t for x in ("open", "show", "launch", "go to")):
             return ("open_settings", None)
 
+    if "mini" in t or "compact" in t:
+        if any(x in t for x in ("turn", "go", "enter", "make", "switch", "become", "enable")):
+            return ("enter_mini", None)
+        if any(x in t for x in ("exit", "leave", "restore", "normal", "full")):
+            return ("exit_mini", None)
+
     if "graphic" in t or "graphics" in t:
         if any(x in t for x in ("low", "performance", "battery", "minimal", "minimum")):
             return ("set_graphics", "low")
@@ -142,6 +148,24 @@ def route_jarvis_ui_command(text: str) -> tuple[str, str | None] | None:
             return ("set_graphics", "medium")
         if any(x in t for x in ("high", "ultra", "max", "maximum", "best")):
             return ("set_graphics", "high")
+
+    color_command = any(x in t for x in ("theme", "color", "colour")) or (
+        any(x in t for x in ("set", "change", "make", "turn", "switch")) and
+        any(x in t for x in ("blue", "cyan", "red", "purple", "gold", "yellow", "platinum", "white", "silver"))
+    )
+    if color_command:
+        theme_aliases = {
+            "arc_reactor": ("arc reactor", "reactor", "blue", "cyan", "default"),
+            "stealth_red": ("stealth red", "red"),
+            "vibranium_purple": ("vibranium purple", "purple", "vibranium"),
+            "nanotech_gold": ("nanotech gold", "gold", "nanotech", "yellow"),
+            "platinum": ("platinum white", "platinum", "white", "silver"),
+        }
+        for key, aliases in theme_aliases.items():
+            if any(alias in t for alias in aliases):
+                return ("set_theme", key)
+        if any(x in t for x in ("next", "cycle", "switch")):
+            return ("cycle_theme", None)
 
     if "chat" in t:
         if any(x in t for x in ("detach", "undock", "float", "pop out")):
@@ -839,10 +863,8 @@ class ToolProgressWidget(QWidget):
 # CompactModeWidget — floating mini arc reactor
 # ---------------------------------------------------------------------------
 
-class CompactModeWidget(QWidget):
-    """Small floating circular arc reactor widget for compact mode."""
-
-    expand_requested = pyqtSignal()
+class CompactChatBubble(QWidget):
+    """Small speech bubble used by mini mode."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -852,72 +874,608 @@ class CompactModeWidget(QWidget):
             Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(80, 80)
+        self.setFixedWidth(282)
+        self._text = ""
+        self._full_text = ""
+        self._expanded = False
+
+        self._label = QLabel(self)
+        self._label.setWordWrap(True)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setFont(QFont("Courier New", 11))
+        self._label.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
+
+        self._full_label = QLabel()
+        self._full_label.setWordWrap(True)
+        self._full_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._full_label.setFont(QFont("Courier New", 11))
+        self._full_label.setStyleSheet(f"color: {C.WHITE}; background: transparent; padding: 1px;")
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidget(self._full_label)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet("background: transparent; border: none;")
+        self._scroll.hide()
+
+        self._toggle_btn = QPushButton("⌄", self)
+        self._toggle_btn.setFixedSize(20, 18)
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.clicked.connect(self._toggle_expanded)
+        self._toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(0, 229, 255, 24);
+                color: {C.PRI};
+                border: 1px solid rgba(0, 229, 255, 72);
+                border-radius: 7px;
+                font-size: 10px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background: rgba(0, 229, 255, 44);
+                color: {C.WHITE};
+                border: 1px solid rgba(0, 229, 255, 144);
+            }}
+        """)
+        self.hide()
+
+    def set_text(self, text: str, full_text: str | None = None):
+        self._text = str(text or "")
+        self._full_text = str(full_text if full_text is not None else self._text)
+        self._sync_content()
+
+    def _toggle_expanded(self):
+        old_bottom = self.geometry().bottom()
+        self._expanded = not self._expanded
+        self._sync_content()
+        if self.isVisible():
+            self.move(self.x(), max(8, old_bottom - self.height()))
+
+    def _sync_content(self):
+        self._toggle_btn.setText("⌃" if self._expanded else "⌄")
+        self._toggle_btn.move(self.width() - 28, 8)
+
+        if self._expanded:
+            self._label.hide()
+            self._scroll.show()
+            self._full_label.setText(self._full_text or self._text)
+            self._full_label.setFixedWidth(self.width() - 36)
+            self._full_label.adjustSize()
+            content_h = self._full_label.sizeHint().height() + 8
+            view_h = max(70, min(260, content_h))
+            self.setFixedHeight(view_h + 40)
+            self._scroll.setGeometry(12, 31, self.width() - 24, view_h)
+        else:
+            self._scroll.hide()
+            self._label.show()
+            self._label.setText(self._text)
+            self._label.setFixedWidth(self.width() - 46)
+            self._label.adjustSize()
+            h = max(42, min(124, self._label.height() + 24))
+            self.setFixedHeight(h + 10)
+            self._label.setGeometry(12, 10, self.width() - 46, h - 12)
+        self.update()
+
+    def text(self) -> str:
+        return self._text
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        body = QRectF(1, 1, self.width() - 2, self.height() - 11)
+        path = QPainterPath()
+        path.addRoundedRect(body, 12, 12)
+        cx = self.width() / 2
+        path.moveTo(cx - 9, body.bottom() - 1)
+        path.lineTo(cx, self.height() - 2)
+        path.lineTo(cx + 9, body.bottom() - 1)
+        path.closeSubpath()
+        p.setPen(QPen(qcol(C.PRI, 168), 1.0))
+        p.setBrush(QBrush(qcol(C.DARK2, 228)))
+        p.drawPath(path)
+        p.setPen(QPen(qcol(C.ENERGY, 38), 1))
+        p.drawRoundedRect(body.adjusted(4, 4, -4, -4), 10, 10)
+
+
+class CompactModeWidget(QWidget):
+    """Small floating circular arc reactor widget for compact mode."""
+
+    _CLOSED_SIZE = QSize(88, 112)
+    _OPEN_SIZE = QSize(392, 394)
+    _ORBIT_ACTIONS = (
+        ("screen_analysis", "SCREEN"),
+        ("camera_analysis", "CAMERA"),
+        ("messaging", "MESSAGE"),
+    )
+
+    expand_requested = pyqtSignal()
+    mute_requested = pyqtSignal()
+    action_requested = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(self._CLOSED_SIZE)
 
         self._tick = 0
         self._ring_angle = 0.0
+        self._orbit_angle = 0.0
+        self._actions_open = False
+        self._active_orbit_key = "screen_analysis"
+        self._orbit_particles = [
+            [start, speed, alpha, lane]
+            for start, speed, alpha, lane in (
+                (18.0, 0.34, 0.36, 0),
+                (92.0, 0.22, 0.52, 1),
+                (158.0, 0.28, 0.42, 2),
+                (244.0, 0.19, 0.58, 0),
+                (318.0, 0.25, 0.34, 1),
+            )
+        ]
         self._state = "LISTENING"
         self._drag_pos = None
+        self._bubble_text = ""
+        self._bubble_full_text = ""
+        self._bubble_turn_text = ""
+        self._bubble_chars_visible = 0
+        self._bubble_timeout_ms = 7200
+        self._muted = False
+        self._speaking = False
 
         ThemeManager.add_listener(lambda _: self.update())
         self._tmr = QTimer(self)
         self._tmr.timeout.connect(self._step)
         self._tmr.start(_gfx_timer('popup', 30))
 
+        self._bubble = CompactChatBubble()
+        self._bubble.hide()
+        self.destroyed.connect(self._bubble.deleteLater)
+
+        self._bubble_timer = QTimer(self)
+        self._bubble_timer.setSingleShot(True)
+        self._bubble_timer.timeout.connect(self._bubble.hide)
+
+        self._typing_timer = QTimer(self)
+        self._typing_timer.timeout.connect(self._type_bubble_tick)
+
+        self._mute_btn = QPushButton("🎙", self)
+        self._mute_btn.setFixedSize(24, 24)
+        self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mute_btn.clicked.connect(self.mute_requested.emit)
+        self._style_mute_button()
+        self._mute_btn.raise_()
+
+        self._action_btn = QPushButton("⋯", self)
+        self._action_btn.setFixedSize(24, 24)
+        self._action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._action_btn.clicked.connect(self._toggle_orbit_actions)
+        self._style_action_button()
+        self._action_btn.raise_()
+
+        self._orbit_buttons: dict[str, QPushButton] = {}
+        for key, label in self._ORBIT_ACTIONS:
+            btn = QPushButton(label, self)
+            btn.setFixedSize(82, 82)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda checked=False, value=key: self._trigger_orbit_action(value))
+            btn.hide()
+            self._orbit_buttons[key] = btn
+        self._style_orbit_buttons()
+        self._layout_controls()
+
     def set_state(self, state: str):
+        prev = self._state
         self._state = state
+        if state == "SPEAKING":
+            self._speaking = True
+            self._bubble_timer.stop()
+        elif prev == "SPEAKING":
+            self.finish_speaking()
+
+    def set_muted(self, muted: bool):
+        self._muted = bool(muted)
+        self._style_mute_button()
+
+    def _style_mute_button(self):
+        if not hasattr(self, "_mute_btn"):
+            return
+        self._mute_btn.setText("⊘" if self._muted else "🎙")
+        color = C.MUTED_C if self._muted else C.GREEN
+        bg = C.RED_BG if self._muted else C.GREEN_BG
+        self._mute_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {bg};
+                color: {color};
+                border: 1px solid {color};
+                border-radius: 12px;
+                font-size: 12px;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background: {C.DARK2};
+                color: {C.WHITE};
+                border: 1px solid {C.WHITE_DIM};
+            }}
+        """)
+
+    def _style_action_button(self):
+        if not hasattr(self, "_action_btn"):
+            return
+        self._action_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(10, 24, 36, 176);
+                color: {C.PRI};
+                border: 1px solid rgba(0, 229, 255, 96);
+                border-radius: 12px;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0;
+            }}
+            QPushButton:hover {{
+                background: rgba(0, 229, 255, 48);
+                color: {C.WHITE};
+                border: 1px solid rgba(0, 229, 255, 164);
+            }}
+        """)
+        shadow = QGraphicsDropShadowEffect(self._action_btn)
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 0)
+        shadow.setColor(qcol(C.ENERGY, 76))
+        self._action_btn.setGraphicsEffect(shadow)
+
+    def _style_orbit_buttons(self):
+        for btn in getattr(self, "_orbit_buttons", {}).values():
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: rgba(10, 22, 35, 90);
+                    color: rgba(196, 232, 242, 136);
+                    border: 1px solid rgba(0, 229, 255, 74);
+                    border-radius: 41px;
+                    font-size: 10px;
+                    font-weight: 800;
+                    letter-spacing: 0;
+                    padding: 0;
+                }}
+                QPushButton:hover {{
+                    background: rgba(0, 229, 255, 52);
+                    color: {C.WHITE};
+                    border: 1px solid rgba(0, 229, 255, 170);
+                }}
+            """)
+            shadow = QGraphicsDropShadowEffect(btn)
+            shadow.setBlurRadius(20)
+            shadow.setOffset(0, 0)
+            shadow.setColor(qcol(C.ENERGY, 50))
+            btn.setGraphicsEffect(shadow)
+
+    def _sync_orbit_button_states(self):
+        for key, btn in self._orbit_buttons.items():
+            selected = key == self._active_orbit_key
+            btn.setText(self._ORBIT_ACTIONS[[a[0] for a in self._ORBIT_ACTIONS].index(key)][1])
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {'rgba(14, 32, 44, 212)' if selected else 'rgba(10, 22, 35, 80)'};
+                    color: {C.WHITE if selected else 'rgba(196, 232, 242, 116)'};
+                    border: 1px solid {'rgba(0, 229, 255, 198)' if selected else 'rgba(0, 229, 255, 68)'};
+                    border-radius: 41px;
+                    font-size: {12 if selected else 10}px;
+                    font-weight: 800;
+                    letter-spacing: 0;
+                    padding: 0;
+                }}
+                QPushButton:hover {{
+                    background: rgba(0, 229, 255, 64);
+                    color: {C.WHITE};
+                    border: 1px solid rgba(0, 229, 255, 220);
+                }}
+            """)
+            effect = btn.graphicsEffect()
+            if isinstance(effect, QGraphicsDropShadowEffect):
+                effect.setBlurRadius(32 if selected else 16)
+                effect.setColor(qcol(C.ENERGY, 110 if selected else 30))
+
+    def _core_center(self) -> QPointF:
+        return QPointF(self.width() / 2 + (10 if self._actions_open else 0), 186 if self._actions_open else 40)
+
+    def _layout_controls(self):
+        c = self._core_center()
+        self._mute_btn.move(int(c.x() + 28), int(c.y() - 38))
+        self._action_btn.move(int(c.x() - self._action_btn.width() / 2), int(c.y() + 64))
+        if not self._actions_open:
+            for btn in self._orbit_buttons.values():
+                btn.hide()
+            return
+        radius = 112
+        orbit_angles = {
+            "screen_analysis": -92,
+            "camera_analysis": 24,
+            "messaging": 156,
+        }
+        for key, _label in self._ORBIT_ACTIONS:
+            angle = math.radians(self._orbit_angle + orbit_angles[key])
+            x = int(c.x() + math.cos(angle) * radius - 41)
+            y = int(c.y() + math.sin(angle) * radius - 41)
+            btn = self._orbit_buttons[key]
+            btn.move(x, y)
+            btn.show()
+            btn.raise_()
+        self._sync_orbit_button_states()
+        self._mute_btn.raise_()
+        self._action_btn.raise_()
+
+    def _toggle_orbit_actions(self):
+        self._set_orbit_actions_open(not self._actions_open)
+
+    def _set_orbit_actions_open(self, open_: bool):
+        if self._actions_open == bool(open_):
+            return
+        old_center = self.frameGeometry().center()
+        self._actions_open = bool(open_)
+        self.setFixedSize(self._OPEN_SIZE if self._actions_open else self._CLOSED_SIZE)
+        self.move(old_center.x() - self.width() // 2, old_center.y() - self.height() // 2)
+        self._action_btn.setText("×" if self._actions_open else "⋯")
+        self._layout_controls()
+        self._position_bubble()
+        self.update()
+
+    def _trigger_orbit_action(self, key: str):
+        self._active_orbit_key = key
+        self._set_orbit_actions_open(False)
+        self.action_requested.emit(key)
+
+    def show_bubble(self, text: str, timeout_ms: int = 7200):
+        text = " ".join(str(text or "").split())
+        if not text:
+            return
+        if len(text) > 180:
+            text = text[:177].rstrip() + "..."
+        self._bubble_text = text
+        self._bubble_full_text = text
+        self._bubble_chars_visible = 0
+        self._bubble_timeout_ms = int(timeout_ms)
+        self._bubble_timer.stop()
+        self._typing_timer.stop()
+        if self._should_show_bubble_instantly(text):
+            self._set_bubble_text(text)
+            self._bubble_timer.start(timeout_ms)
+        else:
+            self._set_bubble_text(text[:1])
+            self._bubble_chars_visible = 1
+            self._typing_timer.start(self._typing_interval_ms(text))
+
+    def show_subtitle_bubble(self, text: str, timeout_ms: int = 7200):
+        text = " ".join(str(text or "").split())
+        if not text:
+            return
+        self._speaking = True
+        self._bubble_timer.stop()
+        self._bubble_turn_text = " ".join(
+            part for part in (self._bubble_turn_text, text) if part
+        ).strip()
+        self._bubble_full_text = self._bubble_turn_text
+        self._bubble_timeout_ms = int(timeout_ms)
+        self._bubble_chars_visible = min(self._bubble_chars_visible, len(self._bubble_full_text))
+        if self._should_show_bubble_instantly(self._bubble_full_text):
+            self._bubble_chars_visible = len(self._bubble_full_text)
+            self._set_bubble_text(self._bubble_full_text)
+            return
+        if self._bubble_chars_visible <= 0:
+            self._bubble_chars_visible = 1
+        self._set_bubble_text(self._bubble_full_text[:self._bubble_chars_visible])
+        if not self._typing_timer.isActive():
+            self._typing_timer.start(self._typing_interval_ms(self._bubble_full_text))
+
+    def _collapsed_bubble_text(self, text: str) -> str:
+        if len(text) > 180:
+            return text[:177].rstrip() + "..."
+        return text
+
+    def _set_bubble_text(self, text: str):
+        self._bubble.set_text(
+            self._collapsed_bubble_text(text),
+            self._bubble_full_text or text,
+        )
+        self._bubble.adjustSize()
+        self._position_bubble()
+        self._bubble.show()
+        self._bubble.raise_()
+
+    def _should_show_bubble_instantly(self, text: str) -> bool:
+        return len(text) <= 14 or len(text.split()) <= 1
+
+    def _typing_interval_ms(self, text: str) -> int:
+        length = len(text)
+        if length <= 45:
+            return 18
+        if length <= 100:
+            return 28
+        return 40
+
+    def _type_bubble_tick(self):
+        if not self._bubble_full_text:
+            self._typing_timer.stop()
+            return
+        step = 2 if len(self._bubble_full_text) <= 80 else 1
+        self._bubble_chars_visible = min(
+            len(self._bubble_full_text),
+            self._bubble_chars_visible + step,
+        )
+        self._set_bubble_text(self._bubble_full_text[:self._bubble_chars_visible])
+        if self._bubble_chars_visible >= len(self._bubble_full_text):
+            self._typing_timer.stop()
+            if not self._speaking:
+                self._bubble_timer.start(self._bubble_timeout_ms)
+
+    def finish_speaking(self):
+        self._speaking = False
+        if self._bubble_full_text and self._bubble.isVisible() and not self._typing_timer.isActive():
+            self._bubble_timer.start(self._bubble_timeout_ms)
+
+    def clear_bubble_transcript(self):
+        self._bubble_turn_text = ""
+        self._bubble_full_text = ""
+        self._bubble_chars_visible = 0
+        self._speaking = False
+        self.hide_bubble()
+
+    def hide_bubble(self):
+        self._typing_timer.stop()
+        self._bubble_timer.stop()
+        self._bubble.hide()
+
+    def _position_bubble(self):
+        if not self._bubble:
+            return
+        g = self.frameGeometry()
+        x = g.left() + int(self._core_center().x()) - self._bubble.width() // 2
+        y = g.top() - self._bubble.height() - 10
+        self._bubble.move(max(8, x), max(8, y))
 
     def _step(self):
         self._tick += 1
         speed = 2.0 if self._state in ("SPEAKING", "THINKING") else 0.5
         self._ring_angle = (self._ring_angle + speed) % 360
+        if self._actions_open:
+            self._orbit_angle = (self._orbit_angle + 0.8) % 360
+            for particle in self._orbit_particles:
+                particle[0] = (particle[0] + particle[1]) % 360
+            self._layout_controls()
         self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        W, H = self.width(), self.height()
-        cx, cy = W / 2, H / 2
-        r = min(W, H) / 2 - 4
+        center = self._core_center()
+        cx, cy = center.x(), center.y()
+        r = 44
+
+        # Readable backdrop when expanded
+        if self._actions_open:
+            bg = QRadialGradient(QPointF(cx, cy + 8), 190)
+            bg.setColorAt(0.0, qcol(C.DARK2, 190))
+            bg.setColorAt(0.5, qcol(C.DARK, 148))
+            bg.setColorAt(1.0, qcol(C.DARK, 14))
+            p.setPen(QPen(Qt.PenStyle.NoPen))
+            p.setBrush(QBrush(bg))
+            p.drawEllipse(QPointF(cx, cy + 8), 176, 176)
+
+        if self._actions_open:
+            orbit_r = 112
+            p.setPen(QPen(qcol(C.PRI, 66), 1.05))
+            p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            p.drawEllipse(QPointF(cx, cy), orbit_r, orbit_r)
+            p.setPen(QPen(qcol(C.ENERGY, 42), 0.95))
+            p.drawEllipse(QPointF(cx, cy), orbit_r * 0.7, orbit_r * 0.7)
+            p.setPen(QPen(qcol(C.PRI, 28), 0.8))
+            p.drawEllipse(QPointF(cx, cy), orbit_r * 0.46, orbit_r * 0.46)
+            for idx, particle in enumerate(self._orbit_particles):
+                angle = math.radians(particle[0] + self._orbit_angle * 0.28)
+                orbit_scale = 0.92 + 0.05 * math.sin(math.radians(self._tick * 2 + idx * 34))
+                px = cx + math.cos(angle) * orbit_r * orbit_scale
+                py = cy + math.sin(angle) * orbit_r * orbit_scale
+                alpha = int(18 + 96 * particle[2])
+                size = 1.1 + particle[2] * 1.1
+                p.setPen(QPen(Qt.PenStyle.NoPen))
+                p.setBrush(QBrush(qcol(C.ENERGY, alpha)))
+                p.drawEllipse(QPointF(px, py), size, size)
+
+            orbit_angles = {
+                "screen_analysis": -92,
+                "camera_analysis": 24,
+                "messaging": 156,
+            }
+            for key, btn in self._orbit_buttons.items():
+                if not btn.isVisible():
+                    continue
+                center_pt = btn.geometry().center()
+                bx, by = center_pt.x(), center_pt.y()
+                dx = bx - cx
+                dy = by - cy
+                dist = max(1.0, math.hypot(dx, dy))
+                ring_x = cx + dx / dist * orbit_r
+                ring_y = cy + dy / dist * orbit_r
+                line_end_x = bx - dx / dist * 22
+                line_end_y = by - dy / dist * 22
+                is_selected = key == self._active_orbit_key
+                p.setPen(QPen(qcol(C.ENERGY, 112 if is_selected else 58), 1.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawLine(QPointF(ring_x, ring_y), QPointF(line_end_x, line_end_y))
+                p.setBrush(QBrush(qcol(C.PRI, 190 if is_selected else 120)))
+                p.setPen(QPen(Qt.PenStyle.NoPen))
+                p.drawEllipse(QPointF(ring_x, ring_y), 2.2 if is_selected else 1.7, 2.2 if is_selected else 1.7)
+                p.drawEllipse(QPointF(line_end_x, line_end_y), 1.8 if is_selected else 1.3, 1.8 if is_selected else 1.3)
 
         # Background circle
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(qcol(C.DARK, 220)))
+        p.setPen(QPen(Qt.PenStyle.NoPen))
+        p.setBrush(QBrush(qcol(C.DARK, 232)))
         p.drawEllipse(QPointF(cx, cy), r, r)
 
         # Outer ring
-        p.setPen(QPen(qcol(C.PRI, 120), 2))
-        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(qcol(C.PRI, 122), 2.0))
+        p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         p.drawEllipse(QPointF(cx, cy), r, r)
+        p.setPen(QPen(qcol(C.ENERGY, 46), 1))
+        p.drawEllipse(QPointF(cx, cy), r - 8, r - 8)
 
         # Rotating arcs
         rect = QRectF(cx - r + 4, cy - r + 4, (r - 4) * 2, (r - 4) * 2)
         is_active = self._state in ("SPEAKING", "THINKING", "PROCESSING")
-        alpha = 200 if is_active else 100
-        p.setPen(QPen(qcol(C.ENERGY, alpha), 2))
+        alpha = 215 if is_active else 118
+        p.setPen(QPen(qcol(C.ENERGY, alpha), 2.0))
         for i in range(3):
             start = int((self._ring_angle + i * 120) * 16)
-            p.drawArc(rect, start, 60 * 16)
+            p.drawArc(rect, start, 54 * 16)
 
         # Core glow
-        core_r = r * 0.3
-        grad = QRadialGradient(QPointF(cx, cy), core_r)
-        glow_a = 180 if is_active else 80
-        grad.setColorAt(0, qcol(C.ENERGY, glow_a))
-        grad.setColorAt(1, qcol(C.PRI, 0))
-        p.setPen(Qt.PenStyle.NoPen)
+        core_r = r * 0.46
+        grad = QRadialGradient(QPointF(cx, cy), core_r * 1.35)
+        glow_a = 205 if is_active else 105
+        grad.setColorAt(0.0, qcol(C.WHITE, 46))
+        grad.setColorAt(0.16, qcol(C.ENERGY, glow_a))
+        grad.setColorAt(0.58, qcol(C.PRI, 84 if is_active else 48))
+        grad.setColorAt(1.0, qcol(C.PRI, 0))
+        p.setPen(QPen(Qt.PenStyle.NoPen))
         p.setBrush(QBrush(grad))
         p.drawEllipse(QPointF(cx, cy), core_r, core_r)
+        inner = QRadialGradient(QPointF(cx, cy), core_r * 0.78)
+        inner.setColorAt(0.0, qcol(C.WHITE, 178 if is_active else 124))
+        inner.setColorAt(0.45, qcol(C.PRI, 94 if is_active else 58))
+        inner.setColorAt(1.0, qcol(C.DARK2, 0))
+        p.setBrush(QBrush(inner))
+        p.drawEllipse(QPointF(cx, cy), core_r * 0.76, core_r * 0.76)
+        p.setPen(QPen(qcol(C.PRI, 150 if is_active else 88), 1.1))
+        p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        p.drawEllipse(QPointF(cx, cy), core_r * 0.66, core_r * 0.66)
 
         # State indicator dot
         state_col = {
             "LISTENING": C.GREEN, "SPEAKING": C.PRI,
             "THINKING": C.ACC, "PROCESSING": C.PURPLE,
         }.get(self._state, C.TEXT_DIM)
-        p.setBrush(QBrush(qcol(state_col)))
-        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(qcol(state_col, 200)))
+        p.setPen(QPen(Qt.PenStyle.NoPen))
         p.drawEllipse(QPointF(cx, cy + r - 10), 4, 4)
+
+        if self._actions_open:
+            for key, btn in self._orbit_buttons.items():
+                if not btn.isVisible():
+                    continue
+                center_pt = btn.geometry().center()
+                bx, by = center_pt.x(), center_pt.y()
+                dx = bx - cx
+                dy = by - cy
+                dist = max(1.0, math.hypot(dx, dy))
+                anchor_x = cx + dx / dist * (orbit_r - 1)
+                anchor_y = cy + dy / dist * (orbit_r - 1)
+                p.setPen(QPen(qcol(C.PRI, 104 if key == self._active_orbit_key else 58), 1))
+                p.setBrush(QBrush(qcol(C.ENERGY, 110 if key == self._active_orbit_key else 72)))
+                p.drawEllipse(QPointF(anchor_x, anchor_y), 2.0 if key == self._active_orbit_key else 1.4, 2.0 if key == self._active_orbit_key else 1.4)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -926,17 +1484,23 @@ class CompactModeWidget(QWidget):
     def mouseMoveEvent(self, event):
         if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
+            self._position_bubble()
 
     def mouseReleaseEvent(self, event):
-        if self._drag_pos:
-            # If barely moved, treat as click → expand
-            delta = event.globalPosition().toPoint() - self.frameGeometry().topLeft() - self._drag_pos
-            if abs(delta.x()) < 5 and abs(delta.y()) < 5:
-                self.expand_requested.emit()
         self._drag_pos = None
 
     def mouseDoubleClickEvent(self, event):
-        self.expand_requested.emit()
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.expand_requested.emit()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._position_bubble()
+
+    def hideEvent(self, event):
+        self.hide_bubble()
+        self._set_orbit_actions_open(False)
+        super().hideEvent(event)
 
 
 # ---------------------------------------------------------------------------
@@ -2045,7 +2609,7 @@ class HudCanvas(QWidget):
 
             # Draw as full ellipse for scale
             p.setPen(QPen(qcol(C.PRI, int(a * _vi)), w))
-            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
             p.drawEllipse(QPointF(cx + ox, cy + oy), r, r * 0.32)
 
             # Tick marks on the largest ring
@@ -2079,7 +2643,7 @@ class HudCanvas(QWidget):
             a = max(0, int(self._brightness * 25 * pulse * _dm))
             if a < 2:
                 continue
-            p.setPen(Qt.PenStyle.NoPen)
+            p.setPen(QPen(Qt.PenStyle.NoPen))
             p.setBrush(QBrush(qcol(C.PRI, int(a * _vi))))
             p.drawEllipse(QPointF(sx, sy), sz, sz)
 
@@ -2101,7 +2665,7 @@ class HudCanvas(QWidget):
             a = max(0, int(self._brightness * 40 * (1.0 - dist * 0.6) * self._wave_opacity))
             if a < 2:
                 continue
-            p.setPen(Qt.PenStyle.NoPen)
+            p.setPen(QPen(Qt.PenStyle.NoPen))
             p.setBrush(QBrush(qcol(C.PRI, int(a * _vi))))
             p.drawEllipse(QPointF(wx, wy), 0.6, 0.6)
 
@@ -2120,7 +2684,7 @@ class HudCanvas(QWidget):
             # Main hex lines
             hex_col = qcol(C.PRI,hex_a)
             p.setPen(QPen(hex_col, 1.2))
-            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
             hex_path = QPainterPath()
             hex_path.moveTo(hex_pts[0])
             for hp in hex_pts[1:]:
@@ -2161,7 +2725,7 @@ class HudCanvas(QWidget):
             # Vertex dots — bright
             for hp in hex_pts:
                 # Vertex glow
-                p.setPen(Qt.PenStyle.NoPen)
+                p.setPen(QPen(Qt.PenStyle.NoPen))
                 p.setBrush(QBrush(qcol(C.ENERGY,max(0, int(hex_a * 0.3)))))
                 p.drawEllipse(hp, 8, 8)
                 # Vertex core
@@ -2282,7 +2846,7 @@ class HudCanvas(QWidget):
                 continue
 
             col = qcol(C.ENERGY,r_a)
-            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
 
             path_pts = []
             for deg in range(0, 361, 3):
@@ -2359,7 +2923,7 @@ class HudCanvas(QWidget):
                 pa = max(0, min(255, int(220 * depth * (1.0 - abs(t - 0.5) * 1.5))))
                 if pa > 5:
                     col = pulse_colors[cidx % len(pulse_colors)]
-                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setPen(QPen(Qt.PenStyle.NoPen))
                     gc = QColor(col); gc.setAlpha(int(pa * 0.2))
                     p.setBrush(QBrush(gc))
                     p.drawEllipse(QPointF(px, py), 14, 14)
@@ -2402,7 +2966,7 @@ class HudCanvas(QWidget):
 
             ga = max(0, int(a * 0.18))
             if ga > 2:
-                p.setPen(Qt.PenStyle.NoPen)
+                p.setPen(QPen(Qt.PenStyle.NoPen))
                 p.setBrush(QBrush(QColor(cr, cg, cb, ga)))
                 p.drawEllipse(QPointF(sx, sy), draw_sz * 5, draw_sz * 5)
 
@@ -2423,7 +2987,7 @@ class HudCanvas(QWidget):
             a = max(0, min(255, int(self._brightness * depth * pulse * 200)))
             if a < 4:
                 continue
-            p.setPen(Qt.PenStyle.NoPen)
+            p.setPen(QPen(Qt.PenStyle.NoPen))
             p.setBrush(QBrush(qcol(C.ENERGY, int(a * _vi))))
             p.drawEllipse(QPointF(sx, sy), sz * pulse, sz * pulse)
 
@@ -2466,7 +3030,7 @@ class HudCanvas(QWidget):
             frc = i / 18
             r = core_base * frc * 7.0
             a = int(ca * 0.05 * frc)
-            p.setPen(Qt.PenStyle.NoPen)
+            p.setPen(QPen(Qt.PenStyle.NoPen))
             p.setBrush(QBrush(qcol(C.PRI, int(a * _vi))))
             p.drawEllipse(QPointF(cx, cy), r, r)
 
@@ -2483,7 +3047,7 @@ class HudCanvas(QWidget):
             ring_a = max(0, int(ca * 0.25 * (1.0 - sr / (core_base * 5.0))))
             if ring_a > 2:
                 p.setPen(QPen(qcol(C.ENERGY,ring_a), 0.6))
-                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
                 p.drawEllipse(QPointF(cx, cy), sr, sr)
 
         # Inner core — intense
@@ -2491,7 +3055,7 @@ class HudCanvas(QWidget):
             frc = i / 5
             r = core_base * frc * 2.0
             a = int(ca * 0.55 * frc)
-            p.setPen(Qt.PenStyle.NoPen)
+            p.setPen(QPen(Qt.PenStyle.NoPen))
             p.setBrush(QBrush(qcol(C.ENERGY, int(a * _vi))))
             p.drawEllipse(QPointF(cx, cy), r, r)
 
@@ -2534,7 +3098,7 @@ class HudCanvas(QWidget):
 
         for bx, by, dx, dy in [(hl,ht,1,1),(hr,ht,-1,1),(hl,hb,1,-1),(hr,hb,-1,-1)]:
             # Ambient glow
-            p.setPen(Qt.PenStyle.NoPen)
+            p.setPen(QPen(Qt.PenStyle.NoPen))
             p.setBrush(QBrush(qcol(C.PRI,max(0, int(self._brightness * 15)))))
             p.drawEllipse(QPointF(bx + dx * bl * 0.35, by + dy * bl * 0.35), bl * 0.5, bl * 0.5)
 
@@ -2553,7 +3117,7 @@ class HudCanvas(QWidget):
             # Corner dot — pulsing
             _corner_pulse = 0.5 + 0.5 * math.sin(self._tick * 0.08 + bx * 0.01 + by * 0.01)
             _corner_a = int(120 + 80 * _corner_pulse)
-            p.setPen(Qt.PenStyle.NoPen)
+            p.setPen(QPen(Qt.PenStyle.NoPen))
             p.setBrush(QBrush(qcol(C.ENERGY,_corner_a)))
             p.drawEllipse(QPointF(bx + dx * 4, by + dy * 4), 2.5 + _corner_pulse, 2.5 + _corner_pulse)
 
@@ -2783,7 +3347,7 @@ class MetricBar(QWidget):
         fill_w  = int(bar_w * self._value / 100)
 
         p.setBrush(QBrush(qcol(C.BAR_BG)))
-        p.setPen(Qt.PenStyle.NoPen)
+        p.setPen(QPen(Qt.PenStyle.NoPen))
         p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, bar_h), 2, 2)
 
         if self._value > 85:
@@ -3509,7 +4073,7 @@ class AIActivityCanvas(QWidget):
                 t = pkt[1]
                 px = (ni[0] + (nj[0] - ni[0]) * t) * W
                 py = y0 + (ni[1] + (nj[1] - ni[1]) * t) * H
-                p.setPen(Qt.PenStyle.NoPen)
+                p.setPen(QPen(Qt.PenStyle.NoPen))
                 p.setBrush(QBrush(qcol(node_col, 220)))
                 p.drawEllipse(QPointF(px, py), 3, 3)
 
@@ -3529,7 +4093,7 @@ class AIActivityCanvas(QWidget):
                 for gi in range(4):
                     gr = r_base + gi * 2.5
                     ga = max(0, int(60 * pulse * (1 - gi / 4)))
-                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setPen(QPen(Qt.PenStyle.NoPen))
                     p.setBrush(QBrush(qcol(node_col, ga)))
                     p.drawEllipse(QPointF(nx, ny), gr, gr)
                 # Core
@@ -3556,7 +4120,7 @@ class AIActivityCanvas(QWidget):
                     r = (t + ri / 3) * min(W, H) * 0.3
                     a = max(0, int(120 * (1 - (t + ri / 3))))
                     p.setPen(QPen(qcol(C.PURPLE, a), 1))
-                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
                     p.drawEllipse(QPointF(hx, hy), r, r)
 
         elif mode == "analyzing" and self.config.show_scanner:
@@ -4136,7 +4700,7 @@ class _DropCanvas(QWidget):
         rect = QRectF(pad, pad, W - pad * 2, H - pad * 2)
 
         bg_col = qcol(C.BORDER_A if z._drag_over else (C.DARK2 if z._hovering else C.PANEL))
-        p.setBrush(QBrush(bg_col)); p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(bg_col)); p.setPen(QPen(Qt.PenStyle.NoPen))
         p.drawRoundedRect(rect, 6, 6)
 
         if z._current_file:   border_col = qcol(C.GREEN, 200)
@@ -4146,7 +4710,7 @@ class _DropCanvas(QWidget):
 
         pen = QPen(border_col, 1.5, Qt.PenStyle.DashLine)
         pen.setDashOffset(z._dash_offset)
-        p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(pen); p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         p.drawRoundedRect(rect, 6, 6)
 
         if z._current_file:   self._paint_file(p, W, H)
@@ -4156,7 +4720,7 @@ class _DropCanvas(QWidget):
     def _paint_idle(self, p, W, H, hover):
         cx, cy = W / 2, H / 2
         col = qcol(C.PRI_DIM if not hover else C.PRI)
-        p.setPen(QPen(col, 2)); p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(col, 2)); p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         p.drawLine(QPointF(cx, cy - 14), QPointF(cx, cy + 4))
         p.drawLine(QPointF(cx - 8, cy - 6), QPointF(cx, cy - 14))
         p.drawLine(QPointF(cx + 8, cy - 6), QPointF(cx, cy - 14))
@@ -4589,6 +5153,110 @@ class ShortcutsOverlay(_OverlayBase):
 # SettingsOverlay — unified settings panel with tabs
 # ---------------------------------------------------------------------------
 
+class GraphicsQualityCard(QPushButton):
+    """Three-bar graphics quality option card."""
+
+    _META = {
+        "low": {
+            "label": "LOW",
+            "desc": "Performance Mode",
+            "alpha": 110,
+            "glow": 20,
+        },
+        "medium": {
+            "label": "MEDIUM",
+            "desc": "Balanced Mode",
+            "alpha": 170,
+            "glow": 36,
+        },
+        "high": {
+            "label": "HIGH",
+            "desc": "Full Visual Mode",
+            "alpha": 235,
+            "glow": 64,
+        },
+    }
+
+    def __init__(self, key: str, parent=None):
+        super().__init__(parent)
+        self.key = key
+        meta = self._META[key]
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(116)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 10)
+        lay.setSpacing(7)
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+
+        bars_wrap = QWidget(self)
+        bars_wrap.setFixedSize(32, 34)
+        bars_lay = QHBoxLayout(bars_wrap)
+        bars_lay.setContentsMargins(2, 2, 2, 2)
+        bars_lay.setSpacing(4)
+        bars_lay.setAlignment(Qt.AlignmentFlag.AlignBottom)
+        self._bars: list[QFrame] = []
+        for height in (14, 22, 30):
+            bar = QFrame(bars_wrap)
+            bar.setFixedSize(6, height)
+            self._bars.append(bar)
+            bars_lay.addWidget(bar, alignment=Qt.AlignmentFlag.AlignBottom)
+        top.addWidget(bars_wrap, alignment=Qt.AlignmentFlag.AlignTop)
+
+        txt = QVBoxLayout()
+        txt.setSpacing(3)
+        self._label = QLabel(meta["label"], self)
+        self._label.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+        self._label.setStyleSheet("background: transparent;")
+        self._desc = QLabel(meta["desc"], self)
+        self._desc.setWordWrap(True)
+        self._desc.setFont(QFont("Courier New", 7))
+        self._desc.setStyleSheet("background: transparent;")
+        txt.addWidget(self._label)
+        txt.addWidget(self._desc)
+        top.addLayout(txt, stretch=1)
+
+        lay.addLayout(top)
+        lay.addStretch(1)
+        self.apply_selected(False)
+
+    def apply_selected(self, selected: bool):
+        meta = self._META[self.key]
+        alpha = meta["alpha"]
+        glow = meta["glow"]
+        border_alpha = 225 if selected else max(70, alpha - 45)
+        bg_alpha = glow if selected else max(10, glow // 2)
+        text_alpha = 255 if selected else max(125, alpha)
+        desc_alpha = 190 if selected else 110
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(0, 18, 30, {bg_alpha});
+                border: 1px solid rgba(0, 229, 255, {border_alpha});
+                border-radius: 8px;
+                text-align: left;
+            }}
+            QPushButton:hover {{
+                background: rgba(0, 229, 255, {min(72, bg_alpha + 22)});
+                border: 1px solid rgba(0, 229, 255, {min(255, border_alpha + 25)});
+            }}
+        """)
+        self._label.setStyleSheet(f"color: rgba(170, 248, 255, {text_alpha}); background: transparent;")
+        self._desc.setStyleSheet(f"color: rgba(122, 232, 255, {desc_alpha}); background: transparent;")
+        for idx, bar in enumerate(self._bars):
+            bar_alpha = min(255, alpha + (idx * 6) + (28 if selected else 0))
+            bar.setStyleSheet(f"""
+                QFrame {{
+                    background: rgba(0, 229, 255, {bar_alpha});
+                    border: 1px solid rgba(190, 250, 255, {120 if selected else 54});
+                    border-radius: 3px;
+                }}
+            """)
+
+
 class SettingsOverlay(_OverlayBase):
     """Unified settings panel with tabs: Voice, Identity, Theme, Shortcuts."""
 
@@ -4756,7 +5424,7 @@ class SettingsOverlay(_OverlayBase):
         gfx_page.setStyleSheet("background: rgba(0, 8, 18, 245);")
         gfx_lay = QVBoxLayout(gfx_page)
         gfx_lay.setContentsMargins(4, 8, 4, 4)
-        gfx_lay.setSpacing(8)
+        gfx_lay.setSpacing(10)
 
         gfx_lay.addWidget(_lbl("GRAPHICS QUALITY", 8, color=C.TEXT_DIM,
                                align=Qt.AlignmentFlag.AlignLeft))
@@ -4767,22 +5435,15 @@ class SettingsOverlay(_OverlayBase):
         desc.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
         gfx_lay.addWidget(desc)
 
-        self._graphics_btns: dict[str, QPushButton] = {}
-
-        gfx_options = [
-            ("low", "LOW", "▮▯▯", "Performance / battery"),
-            ("medium", "MEDIUM", "▮▮▯", "Balanced default"),
-            ("high", "HIGH", "▮▮▮", "Full JARVIS visuals"),
-        ]
-
-        for key, label, bars, subtitle in gfx_options:
-            btn = QPushButton(f"  {label:<7} {bars}   {subtitle}")
-            btn.setFixedHeight(46)
-            btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._graphics_btns: dict[str, GraphicsQualityCard] = {}
+        gfx_row = QHBoxLayout()
+        gfx_row.setSpacing(10)
+        for key in ("low", "medium", "high"):
+            btn = GraphicsQualityCard(key)
             btn.clicked.connect(lambda _, k=key: self._select_graphics(k))
             self._graphics_btns[key] = btn
-            gfx_lay.addWidget(btn)
+            gfx_row.addWidget(btn, stretch=1)
+        gfx_lay.addLayout(gfx_row)
 
         self._graphics_note = QLabel("")
         self._graphics_note.setWordWrap(True)
@@ -4869,38 +5530,7 @@ class SettingsOverlay(_OverlayBase):
         key = str(key or "medium").lower().strip()
 
         for k, btn in self._graphics_btns.items():
-            active = (k == key)
-            if active:
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {C.PRI_GHO};
-                        color: {C.PRI};
-                        border: 1px solid {C.PRI};
-                        border-radius: 4px;
-                        text-align: left;
-                        padding-left: 10px;
-                    }}
-                    QPushButton:hover {{
-                        background: {C.PRI}22;
-                        color: {C.ENERGY};
-                    }}
-                """)
-            else:
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: rgba(0, 3, 8, 210);
-                        color: {C.TEXT_MED};
-                        border: 1px solid {C.BORDER}88;
-                        border-radius: 4px;
-                        text-align: left;
-                        padding-left: 10px;
-                    }}
-                    QPushButton:hover {{
-                        color: {C.PRI};
-                        background: {C.PRI_GHO};
-                        border: 1px solid {C.BORDER_B};
-                    }}
-                """)
+            btn.apply_selected(k == key)
 
 
 
@@ -5531,8 +6161,8 @@ class _SubtitleWidget(QWidget):
     """Centered, scrolling subtitle display with morph fade-out."""
 
     _MAX_VISIBLE = 5          # max visible lines in viewport
-    _HOLD_MS = 5000           # hold after last chunk before fade starts
-    _FADE_MS = 800            # duration of the dissolve animation
+    _HOLD_MS = 7200           # hold after last chunk before fade starts
+    _FADE_MS = 1200           # duration of the dissolve animation
     _LINE_H = 22
     _SCROLL_SPEED = 0.18      # lerp factor per frame for smooth scroll
 
@@ -5748,7 +6378,7 @@ class _SubtitleWidget(QWidget):
 
         # Semi-transparent background panel for readability
         _bg_col = QColor(0, 5, 12, int(160 * self._opacity))
-        p.setPen(Qt.PenStyle.NoPen)
+        p.setPen(QPen(Qt.PenStyle.NoPen))
         p.setBrush(QBrush(_bg_col))
         _r = self.rect().adjusted(4, 2, -4, -2)
         _rr = 6
@@ -5756,7 +6386,7 @@ class _SubtitleWidget(QWidget):
 
         # Semi-transparent background panel for readability
         _bg_col = QColor(0, 5, 12, int(160 * self._opacity))
-        p.setPen(Qt.PenStyle.NoPen)
+        p.setPen(QPen(Qt.PenStyle.NoPen))
         p.setBrush(QBrush(_bg_col))
         _r = self.rect().adjusted(4, 2, -4, -2)
         _rr = 6
@@ -5883,7 +6513,7 @@ class MinimalCoreCanvas(QWidget):
         aura.setColorAt(0.0, qcol(col, 80))
         aura.setColorAt(0.35, qcol(col, 24))
         aura.setColorAt(1.0, qcol(col, 0))
-        p.setPen(Qt.PenStyle.NoPen)
+        p.setPen(QPen(Qt.PenStyle.NoPen))
         p.setBrush(QBrush(aura))
         p.drawEllipse(QPointF(cx, cy), r * 3.2, r * 3.2)
 
@@ -5894,7 +6524,7 @@ class MinimalCoreCanvas(QWidget):
         p.setBrush(QBrush(core))
         p.drawEllipse(QPointF(cx, cy), r, r)
 
-        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         p.setPen(QPen(qcol(col, 72), 1))
         p.drawEllipse(QPointF(cx, cy), r * 1.75, r * 1.75)
 
@@ -6100,6 +6730,10 @@ class MainWindow(QMainWindow):
     _sub_sig       = pyqtSignal(str)
     _sub_clear_sig = pyqtSignal()
     _sub_hold_sig  = pyqtSignal()
+    _mini_bubble_sig = pyqtSignal(str)
+    _mini_subtitle_sig = pyqtSignal(str)
+    _mini_clear_sig = pyqtSignal()
+    _screen_notice_sig = pyqtSignal(str)
     _mode_sig      = pyqtSignal(str)          # context mode for AIActivityCanvas
     _task_sig      = pyqtSignal(str, str)     # (task_name, status) for TaskQueueWidget
     _tool_sig      = pyqtSignal(str)          # tool log line for ToolLogWidget
@@ -6138,6 +6772,7 @@ class MainWindow(QMainWindow):
         self.on_voice_change        = None
         self.on_name_change         = None
         self.on_tts_provider_change = None
+        self.on_compact_action      = None
         self._muted                 = False
         self._current_file: str | None = None
         self._tts_overlay: TTSProviderOverlay | None = None
@@ -6253,6 +6888,10 @@ class MainWindow(QMainWindow):
         self._sub_sig.connect(self._subtitle.set_text)
         self._sub_clear_sig.connect(self._subtitle.clear_subtitle)
         self._sub_hold_sig.connect(self._subtitle.start_hold_timer)
+        self._mini_bubble_sig.connect(self._show_compact_bubble)
+        self._mini_subtitle_sig.connect(self._show_compact_subtitle)
+        self._mini_clear_sig.connect(self._clear_compact_subtitle)
+        self._screen_notice_sig.connect(self._show_screen_check_notice)
         self._mode_sig.connect(self._ai_canvas.set_mode)
         self._task_sig.connect(self._mission.task_widget.push_task)
         self._tool_sig.connect(self._mission.tool_widget.push)
@@ -6440,6 +7079,8 @@ class MainWindow(QMainWindow):
             self.hide()
             cw = CompactModeWidget()
             cw.expand_requested.connect(self._toggle_compact_mode)
+            cw.mute_requested.connect(self._toggle_mute)
+            cw.action_requested.connect(self._handle_compact_action)
             # Position near center of screen
             screen = QApplication.primaryScreen().availableGeometry()
             cw.move(screen.width() - 100, screen.height() // 2 - 40)
@@ -6448,6 +7089,108 @@ class MainWindow(QMainWindow):
             # Sync state
             if hasattr(self, "hud"):
                 cw.set_state(self.hud.state)
+            cw.set_muted(getattr(self, "_muted", False))
+
+    def _handle_compact_action(self, action: str):
+        action = str(action or "").strip()
+        if action in ("screen_analysis", "camera_analysis"):
+            source = "camera" if action == "camera_analysis" else "screen"
+            self._show_screen_check_notice(source)
+            if self.on_compact_action:
+                try:
+                    self.on_compact_action(action, "")
+                except Exception as e:
+                    self._log.append_log(f"SYS: Compact action failed: {e}")
+            elif self.on_text_command:
+                prompt = "Analyze my camera." if source == "camera" else "Analyze my screen."
+                threading.Thread(target=self.on_text_command, args=(prompt,), daemon=True).start()
+            return
+
+        if action == "messaging":
+            text, ok = QInputDialog.getMultiLineText(
+                self,
+                "JARVIS Messaging",
+                "Message to type into the current chat:",
+                "",
+            )
+            message = str(text or "").strip()
+            if not ok or not message:
+                return
+            self._show_compact_bubble("Messaging...")
+            if self.on_compact_action:
+                try:
+                    self.on_compact_action("messaging", message)
+                except Exception as e:
+                    self._log.append_log(f"SYS: Compact messaging failed: {e}")
+            elif self.on_text_command:
+                threading.Thread(
+                    target=self.on_text_command,
+                    args=(f"Send this in the current messaging app: {message}",),
+                    daemon=True,
+                ).start()
+
+    def _show_compact_bubble(self, text: str):
+        try:
+            if self._compact_widget:
+                if not self._compact_widget.isVisible():
+                    self._compact_widget.show()
+                self._compact_widget.show_bubble(text)
+        except Exception:
+            pass
+
+    def _show_compact_subtitle(self, text: str):
+        try:
+            if self._compact_widget:
+                if not self._compact_widget.isVisible():
+                    self._compact_widget.show()
+                self._compact_widget.show_subtitle_bubble(text)
+        except Exception:
+            pass
+
+    def _clear_compact_subtitle(self):
+        try:
+            if self._compact_widget:
+                self._compact_widget.clear_bubble_transcript()
+        except Exception:
+            pass
+
+    def _show_screen_check_notice(self, source: str = "screen"):
+        source = "camera" if str(source or "").lower().strip() == "camera" else "screen"
+        target = "camera" if source == "camera" else "screen"
+        warning = (
+            f"JARVIS is checking your {target}. "
+            "Don't switch tabs unexpectedly if you want accurate results."
+        )
+        if self._compact_mode:
+            self._show_desktop_notification("JARVIS vision active", warning)
+        self._surface_screen_status(warning, "warning", 7800)
+        for idx, label in enumerate(("Processing...", "Muttering...", "Tinkering...", "Commanding...", "Analyzing...")):
+            QTimer.singleShot(1200 + idx * 1100, lambda msg=label: self._surface_screen_status(msg, "info", 2200))
+
+    def _show_desktop_notification(self, title: str, message: str):
+        try:
+            if hasattr(self, "_tray") and self._tray:
+                self._tray.showMessage(
+                    title,
+                    message,
+                    QSystemTrayIcon.MessageIcon.Information,
+                    6500,
+                )
+        except Exception:
+            pass
+
+    def _surface_screen_status(self, message: str, toast_type: str = "info", bubble_ms: int = 3200):
+        try:
+            self._show_toast(message, toast_type)
+        except Exception:
+            pass
+        try:
+            if self._compact_widget:
+                if not self._compact_widget.isVisible():
+                    self._compact_widget.show()
+                self._compact_widget.show_bubble(message, bubble_ms)
+        except Exception:
+            pass
 
     # ── Shortcuts overlay ────────────────────────────────────────────────
     def _toggle_shortcuts_overlay(self):
@@ -6489,7 +7232,7 @@ class MainWindow(QMainWindow):
             current_name=current_name,
             current_theme=ThemeManager.current_name(),
         )
-        ow, oh = 380, 360
+        ow, oh = 520, 400
         ov.setGeometry(
             (cw.width() - ow) // 2,
             (cw.height() - oh) // 2,
@@ -8033,6 +8776,8 @@ class MainWindow(QMainWindow):
         self.hud.muted = self._muted
         if hasattr(self, "_minimal_core"):
             self._minimal_core.muted = self._muted
+        if self._compact_widget:
+            self._compact_widget.set_muted(self._muted)
         self._style_mute_btn()
         if self._muted:
             self._apply_state("MUTED")
@@ -8153,6 +8898,18 @@ class MainWindow(QMainWindow):
                 _ack("Opening JARVIS settings.")
                 return True
 
+            if action == "enter_mini":
+                if not getattr(self, "_compact_mode", False):
+                    self._toggle_compact_mode()
+                _ack("Mini mode enabled.")
+                return True
+
+            if action == "exit_mini":
+                if getattr(self, "_compact_mode", False):
+                    self._toggle_compact_mode()
+                _ack("Mini mode disabled.")
+                return True
+
             if action == "set_graphics" and value:
                 applied = set_graphics_quality(value)
                 try:
@@ -8169,6 +8926,24 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
                 _ack(f"Graphics quality set to {applied.upper()}.")
+                return True
+
+            if action == "set_theme" and value:
+                if value not in ThemeManager.theme_names():
+                    _ack("Unknown theme.")
+                    return True
+                ThemeManager.set_theme(value)
+                display = ThemeManager.theme_display_name(value)
+                _ack(f"Theme set to {display}.")
+                try:
+                    ToastManager.show_toast(self.centralWidget(), f"Theme: {display}", "info", 2000)
+                except Exception:
+                    pass
+                return True
+
+            if action == "cycle_theme":
+                self._cycle_theme()
+                _ack(f"Theme set to {ThemeManager.theme_display_name(ThemeManager.current_name())}.")
                 return True
 
             if action == "detach_chat":
@@ -8818,6 +9593,14 @@ class JarvisUI:
     def on_tts_provider_change(self, cb):
         self._win.on_tts_provider_change = cb
 
+    @property
+    def on_compact_action(self):
+        return self._win.on_compact_action
+
+    @on_compact_action.setter
+    def on_compact_action(self, cb):
+        self._win.on_compact_action = cb
+
     def set_state(self, state: str):
         self._win._state_sig.emit(state)
 
@@ -8842,6 +9625,7 @@ class JarvisUI:
     def show_subtitle(self, text: str):
         """Thread-safe subtitle display request."""
         try:
+            self._win._mini_subtitle_sig.emit(text)
             # Don't show subtitles when muted.
             if getattr(self._win, "_muted", False) or (
                 getattr(self._win, "hud", None) is not None and getattr(self._win.hud, "muted", False)
@@ -8851,10 +9635,25 @@ class JarvisUI:
         except Exception:
             pass
 
+    def show_mini_bubble(self, text: str):
+        """Thread-safe compact-mode bubble display request."""
+        try:
+            self._win._mini_bubble_sig.emit(text)
+        except Exception:
+            pass
+
+    def show_screen_check_notice(self, source: str = "screen"):
+        """Thread-safe screen analysis notice."""
+        try:
+            self._win._screen_notice_sig.emit(str(source or "screen"))
+        except Exception:
+            pass
+
     def clear_subtitle(self):
         """Thread-safe subtitle clear."""
         try:
             self._win._sub_clear_sig.emit()
+            self._win._mini_clear_sig.emit()
         except Exception:
             pass
 

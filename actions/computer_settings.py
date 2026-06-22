@@ -1,3 +1,4 @@
+import os
 #computer_settings.py
 import json
 import re
@@ -176,12 +177,32 @@ def brightness_down():
             print(f"[Settings] Brightness down failed on Windows: {e}")
 
 def close_app():
-    if _OS == "Darwin": pyautogui.hotkey("command", "q")
-    else:               pyautogui.hotkey("alt", "f4")
+    if _OS == "Darwin":
+        pyautogui.hotkey("command", "q")
+    else:
+        pyautogui.hotkey("alt", "f4")
 
 def close_window():
-    if _OS == "Darwin": pyautogui.hotkey("command", "w")
-    else:               pyautogui.hotkey("ctrl", "w")
+    if _OS == "Darwin":
+        pyautogui.hotkey("command", "w")
+    else:
+        pyautogui.hotkey("ctrl", "w")
+
+def quit_app(app_name: str | None = None):
+    """
+    Quit a specific app on macOS when an app name is provided.
+    Falls back to closing the frontmost app/window if no app name is provided.
+    """
+    app_name = (app_name or "").strip()
+
+    if _OS == "Darwin":
+        if app_name:
+            script = f'tell application "{app_name}" to quit'
+            subprocess.run(["osascript", "-e", script], capture_output=True)
+        else:
+            pyautogui.hotkey("command", "q")
+    else:
+        pyautogui.hotkey("alt", "f4")
 
 def full_screen():
     if _OS == "Darwin": pyautogui.hotkey("ctrl", "command", "f")
@@ -524,6 +545,7 @@ ACTION_MAP: dict[str, callable] = {
     "play_pause":          pause_video,
     "close_app":           close_app,
     "close_window":        close_window,
+    "quit_app":            quit_app,
     "full_screen":         full_screen,
     "fullscreen":          full_screen,
     "minimize":            minimize_window,
@@ -575,6 +597,31 @@ ACTION_MAP: dict[str, callable] = {
 _DANGEROUS_ACTIONS = {"restart", "shutdown"}
 
 
+def _power_target_text(params: dict, description: str, value) -> str:
+    return " ".join(
+        str(part or "")
+        for part in (
+            description,
+            value,
+            params.get("app_name", ""),
+            params.get("target", ""),
+            params.get("text", ""),
+        )
+    ).lower()
+
+
+def _is_jarvis_self_shutdown_request(params: dict, action: str, description: str, value) -> bool:
+    text = f"{action} {_power_target_text(params, description, value)}"
+    if "jarvis" not in text:
+        return False
+    return any(word in text for word in ("shutdown", "shut down", "restart", "reboot", "close", "quit", "exit", "stop"))
+
+
+def _has_explicit_computer_power_target(params: dict, description: str, value) -> bool:
+    text = _power_target_text(params, description, value)
+    return any(word in text for word in ("computer", "system", "mac", "macbook", "pc", "machine"))
+
+
 
 def _detect_action(description: str) -> dict:
 
@@ -596,6 +643,8 @@ Return ONLY a valid JSON object:
 
 Rules:
 - Pick the single best matching action from the available list.
+- If the user says to shut down, restart, reboot, close, quit, exit, or stop JARVIS, do not choose shutdown or restart.
+- Choose shutdown/restart only when the user clearly asks to power off or restart the computer/system/Mac/PC.
 - For volume_set: value is an integer 0-100.
 - For type_text: value is the exact text to type.
 - For press_key: value is the key name (e.g. "f5", "tab", "enter").
@@ -636,11 +685,19 @@ def computer_settings(
     if not action:
         return "No action could be determined."
 
+    if _is_jarvis_self_shutdown_request(params, action, description, value):
+        return "JARVIS self-shutdown is disabled. No computer shutdown was performed."
+
     print(f"[Settings] Action: {action}  Value: {value}  OS: {_OS}")
     if player:
         player.write_log(f"[Settings] {action}")
 
     if action in _DANGEROUS_ACTIONS:
+        if not _has_explicit_computer_power_target(params, description, value):
+            return (
+                f"Refusing to {action} the computer because the target was not explicit. "
+                f"Say '{action} my computer' if you intend to power-control the machine."
+            )
         confirmed = str(params.get("confirmed", "")).lower()
         if confirmed not in ("yes", "true", "1", "confirm"):
             return (
@@ -690,6 +747,19 @@ def computer_settings(
         return f"Unknown action: '{raw_action}'."
 
     try:
+        if action in ("quit_app", "close_app", "close_window"):
+            app_name = str(
+                params.get("app_name")
+                or value
+                or description
+                or ""
+            ).strip()
+
+            # If user named an app on macOS, target that app directly.
+            if _OS == "Darwin" and app_name:
+                quit_app(app_name)
+                return f"Closed app: {app_name}."
+
         func()
         return f"Done: {action}."
     except Exception as e:

@@ -1,5 +1,6 @@
 #web_search.py
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -14,8 +15,20 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    env_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            key = data.get("gemini_api_key") or data.get("GEMINI_API_KEY")
+            if key:
+                return key
+    except Exception:
+        pass
+
+    raise ValueError("Gemini API key not found. Set GEMINI_API_KEY or config/api_keys.json['gemini_api_key'].")
 
 
 def _gemini_search(query: str) -> str:

@@ -172,15 +172,20 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
+        "description": (
+            "Sends a text message via WhatsApp, Telegram, Instagram, Messages, Discord, "
+            "or any focused/current messaging app. Every sent text is automatically marked "
+            "with CREATED BY JARVIS. The final outgoing message is typed visibly into the "
+            "message box instead of pasted."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "receiver":     {"type": "STRING", "description": "Recipient contact name"},
-                "message_text": {"type": "STRING", "description": "The message to send"},
-                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."}
+                "receiver":     {"type": "STRING", "description": "Recipient contact name. Optional when platform is current/focused."},
+                "message_text": {"type": "STRING", "description": "The message to send. JARVIS appends CREATED BY JARVIS automatically."},
+                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, Instagram, Messages, Discord, or current/focused for the active text box. Instagram uses screen vision to find the message controls."}
             },
-            "required": ["receiver", "message_text", "platform"]
+            "required": ["message_text", "platform"]
         }
     },
     {
@@ -239,6 +244,8 @@ TOOL_DECLARATIONS = [
             "typing text on screen, closing windows, fullscreen, dark mode, WiFi, restart, shutdown, "
             "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
             "Use for ANY single computer control command. NEVER route to agent_task. "
+            "Never use this to shut down, close, quit, exit, or stop JARVIS itself. "
+            "Only use shutdown/restart when the user clearly says computer, system, Mac, or PC; otherwise refuse. "
             "IMPORTANT: For closing an app window, use action='close_window'. "
             "Do NOT use action='close', action='close_apps', or action='quit' unless those exact actions exist. "
             "On macOS/Darwin, closing a window should map to close_window."
@@ -432,7 +439,7 @@ TOOL_DECLARATIONS = [
         "name": "jarvis_ui_control",
         "description": (
             "Controls JARVIS's own interface, not the operating system. "
-            "Use this for JARVIS UI settings, graphics quality, and docking or detaching JARVIS chat or analytics panels. "
+            "Use this for JARVIS UI settings, mini/compact mode, graphics quality, theme colors, and docking or detaching JARVIS chat or analytics panels. "
             "For ambiguous 'settings', ask whether the user means JARVIS settings or macOS System Settings."
         ),
         "parameters": {
@@ -443,6 +450,10 @@ TOOL_DECLARATIONS = [
                     "enum": [
                         "open_settings",
                         "set_graphics",
+                        "set_theme",
+                        "cycle_theme",
+                        "enter_mini",
+                        "exit_mini",
                         "detach_chat",
                         "dock_chat",
                         "detach_analytics",
@@ -451,26 +462,13 @@ TOOL_DECLARATIONS = [
                 },
                 "value": {
                     "type": "string",
-                    "description": "Optional value. For set_graphics, use low, medium, or high."
+                    "description": "Optional value. For set_graphics, use low, medium, or high. For set_theme, use arc_reactor, stealth_red, vibranium_purple, nanotech_gold, or platinum."
                 }
             },
             "required": ["action"]
         }
     },
 
-    {
-        "name": "shutdown_jarvis",
-        "description": (
-            "Shuts down the assistant completely. "
-            "Call this when the user expresses intent to end the conversation, "
-            "close the assistant, say goodbye, or stop Jarvis. "
-            "The user can say this in ANY language."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {},
-        }
-    },
     {
     "name": "file_processor",
     "description": (
@@ -644,12 +642,72 @@ class JarvisLive:
         self.required_unlock_path: str | None = None
         self.required_unlock_secret: str | None = None
         self.ui.on_text_command = self._on_text_command
+        self.ui.on_compact_action = self._on_compact_action
         self._voice_changed  = threading.Event()
         self._turn_done_event: asyncio.Event | None = None
         self._tts_engine = None
         self._ext_tts_provider = ""
         self._ext_tts_voice_id = ""
         self._ext_tts_api_key = ""
+
+    def _on_compact_action(self, action: str, payload: str = ""):
+        action = str(action or "").strip()
+        payload = str(payload or "")
+
+        if action in ("screen_analysis", "camera_analysis"):
+            angle = "camera" if action == "camera_analysis" else "screen"
+            text = (
+                "Analyze what you see through the camera. Be concise and accurate."
+                if angle == "camera"
+                else "Analyze what is currently visible on my screen. Be concise and accurate."
+            )
+            try:
+                self.ui.show_screen_check_notice(angle)
+                self.ui.write_log(f"SYS: MINI {angle} analysis requested.")
+            except Exception:
+                pass
+            threading.Thread(
+                target=screen_process,
+                kwargs={
+                    "parameters": {"angle": angle, "text": text},
+                    "response": None,
+                    "player": self.ui,
+                    "session_memory": None,
+                },
+                daemon=True,
+            ).start()
+            return
+
+        if action == "messaging":
+            message = payload.strip()
+            if not message:
+                try:
+                    self.ui.show_mini_bubble("No message entered.")
+                except Exception:
+                    pass
+                return
+
+            def _send_current_message():
+                try:
+                    result = send_message(
+                        parameters={
+                            "platform": "current",
+                            "receiver": "",
+                            "message_text": message,
+                        },
+                        response=None,
+                        player=self.ui,
+                        session_memory=None,
+                    )
+                except Exception as e:
+                    result = f"Could not send message: {e}"
+                try:
+                    self.ui.write_log(f"SYS: MINI messaging → {result}")
+                    self.ui.show_mini_bubble(result)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_send_current_message, daemon=True).start()
 
     def _on_text_command(self, text: str):
         # UI commands must be intercepted before Gemini/planner/computer actions.
@@ -672,11 +730,17 @@ class JarvisLive:
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
+            was_speaking = self._is_speaking
             self._is_speaking = value
         if value:
             self.ui.set_state("SPEAKING")
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
+        if was_speaking and not value:
+            try:
+                self.ui.start_subtitle_hold()
+            except Exception:
+                pass
     def speak(self, text: str):
         if not self._loop or not self.session:
             return
@@ -817,6 +881,38 @@ class JarvisLive:
                         return "Graphics quality must be low, medium, or high."
                     return ui_cmd(f"Set graphics quality to {value}", f"Graphics quality set to {value.upper()}.")
 
+                if action in ("set_theme", "theme", "change_theme"):
+                    valid_themes = {
+                        "arc_reactor": "arc reactor theme",
+                        "arc reactor": "arc reactor theme",
+                        "blue": "arc reactor theme",
+                        "stealth_red": "stealth red theme",
+                        "stealth red": "stealth red theme",
+                        "red": "stealth red theme",
+                        "vibranium_purple": "vibranium purple theme",
+                        "vibranium purple": "vibranium purple theme",
+                        "purple": "vibranium purple theme",
+                        "nanotech_gold": "nanotech gold theme",
+                        "nanotech gold": "nanotech gold theme",
+                        "gold": "nanotech gold theme",
+                        "platinum": "platinum theme",
+                        "platinum white": "platinum theme",
+                        "white": "platinum theme",
+                    }
+                    command = valid_themes.get(value)
+                    if not command:
+                        return "Theme must be arc_reactor, stealth_red, vibranium_purple, nanotech_gold, or platinum."
+                    return ui_cmd(f"Set theme to {command}", f"Theme set to {command}.")
+
+                if action in ("cycle_theme", "next_theme"):
+                    return ui_cmd("Cycle theme", "Theme changed.")
+
+                if action in ("enter_mini", "turn_mini", "mini", "compact_on"):
+                    return ui_cmd("Turn MINI", "Mini mode enabled.")
+
+                if action in ("exit_mini", "compact_off", "normal_mode"):
+                    return ui_cmd("Exit MINI", "Mini mode disabled.")
+
                 if action == "detach_chat":
                     return ui_cmd("Detach chat", "Detached chat panel.")
 
@@ -863,10 +959,25 @@ class JarvisLive:
                 if app_name in ("jarvis settings", "jarvis ui settings", "ui settings", "app settings"):
                     return ui_cmd("Open JARVIS settings", "Opened JARVIS settings.")
 
-            # Block accidental shutdown unless explicitly confirmed later.
-            if name == "shutdown_jarvis":
-                ui_log("Shutdown request blocked unless explicitly confirmed.")
-                return "Shutdown blocked. Please say 'confirm shutdown JARVIS' if you really want to close the assistant."
+            if name == "computer_settings":
+                action = str(a.get("action", "") or "").lower().strip().replace(" ", "_").replace("-", "_")
+                target_text = " ".join(
+                    str(part or "")
+                    for part in (
+                        a.get("description", ""),
+                        a.get("value", ""),
+                        a.get("app_name", ""),
+                        a.get("target", ""),
+                    )
+                ).lower()
+                text = f"{action} {target_text}"
+                if "jarvis" in text and any(word in text for word in ("shutdown", "shut down", "restart", "reboot", "close", "quit", "exit", "stop")):
+                    return "JARVIS self-shutdown is disabled. No computer shutdown was performed."
+                if action in ("shutdown", "restart") and not any(word in target_text for word in ("computer", "system", "mac", "macbook", "pc", "machine")):
+                    return (
+                        f"Refusing to {action} the computer because the target was not explicit. "
+                        f"Say '{action} my computer' if you intend to power-control the machine."
+                    )
 
             return None
 
@@ -951,6 +1062,11 @@ class JarvisLive:
                 result = r or "Done."
 
             elif name == "screen_process":
+                try:
+                    if hasattr(self.ui, "show_screen_check_notice"):
+                        self.ui.show_screen_check_notice(args.get("angle", "screen"))
+                except Exception:
+                    pass
                 threading.Thread(
                     target=screen_process,
                     kwargs={"parameters": args, "response": None,
@@ -1077,15 +1193,6 @@ class JarvisLive:
             elif name == "flight_finder":
                 r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
                 result = r or "Done."
-
-            elif name == "shutdown_jarvis":
-                self.ui.write_log("SYS: Shutdown requested.")
-                self.speak("Goodbye, sir.")
-                def _shutdown():
-                    import time, os
-                    time.sleep(1)
-                    os._exit(0)
-                threading.Thread(target=_shutdown, daemon=True).start()
 
             else:
                 result = f"Unknown tool: {name}"

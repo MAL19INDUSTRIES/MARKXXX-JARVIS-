@@ -66,4 +66,3 @@ Fix:
 - check environment permissions (mic, display, etc.)
 - ensure any optional dependencies (like Playwright) are installed
 - if needed, open an issue with the traceback
-

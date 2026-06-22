@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -21,7 +22,16 @@ ABSOLUTE RULES:
 - NEVER use generated_code or write Python scripts. It does not exist.
 - NEVER reference previous step results in parameters. Every step is independent.
 - Use web_search for ANY information retrieval, research, or current data.
-- Use file_controller to save content to disk.
+- Use file_controller to save final gathered content to disk.
+- NEVER create placeholder files like "results will be added later".
+- If the goal says research and save, first gather the research, then write the actual research content into the file.
+- For file_controller write/create_file after web_search steps, content may be left empty or brief; the executor will inject prior search results automatically.
+
+- SPEED RULE: For normal research-and-save tasks, use ONE strong web_search query, not 2-3 separate searches.
+- Only use multiple web_search steps if the user explicitly asks for deep research, comparison, or multiple separate topics.
+- Prefer fewer steps. A good research-save task should usually be: web_search -> file_controller.
+- Do not waste steps creating empty files before writing. Write the final report directly.
+
 - Max 5 steps. Use the minimum steps needed.
 
 AVAILABLE TOOLS AND THEIR PARAMETERS:
@@ -117,7 +127,7 @@ Steps:
 
 web_search | query: "mechanical engineering overview definition history"
 web_search | query: "mechanical engineering applications and future trends"
-file_controller | action: write, path: desktop, name: mechanical_engineering.txt, content: "MECHANICAL ENGINEERING RESEARCH\n\nThis file will be filled with web research results."
+file_controller | action: write, path: desktop, name: mechanical_engineering.txt, content: ""
 
 Goal: "What is the price of Bitcoin"
 Steps:
@@ -167,8 +177,20 @@ OUTPUT — return ONLY valid JSON, no markdown, no explanation, no code blocks:
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    env_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if env_key:
+        return env_key
+
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            key = data.get("gemini_api_key") or data.get("GEMINI_API_KEY")
+            if key:
+                return key
+    except Exception:
+        pass
+
+    raise ValueError("Gemini API key not found. Set GEMINI_API_KEY or config/api_keys.json['gemini_api_key'].")
 
 
 def create_plan(goal: str, context: str = "") -> dict:

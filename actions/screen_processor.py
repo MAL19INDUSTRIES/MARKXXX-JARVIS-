@@ -17,9 +17,12 @@ from memory.config_manager import get_gemini_key
 import numpy as np
 import sounddevice as sd
 
-DEFAULT_VOICE_NAME = os.environ.get("GEMINI_VOICE_NAME", "puck").strip().lower()
-if not DEFAULT_VOICE_NAME:
-    DEFAULT_VOICE_NAME = "puck"
+def _get_voice_name() -> str:
+    """Read voice name dynamically so it picks up runtime changes."""
+    v = os.environ.get("GEMINI_VOICE_NAME", "").strip().lower()
+    return v if v else "puck"
+
+DEFAULT_VOICE_NAME = _get_voice_name()
 
 try:
     import cv2
@@ -84,9 +87,12 @@ _CHANNELS           = 1
 _RECEIVE_SAMPLE_RATE = 24_000
 _CHUNK_SIZE         = 1_024
 
-_IMG_MAX_W = 640
-_IMG_MAX_H = 360
-_JPEG_Q    = 60
+_IMG_MAX_W = 480
+_IMG_MAX_H = 270
+_JPEG_Q    = 45
+
+_last_capture_time = 0.0
+_MIN_CAPTURE_INTERVAL = 0.5  # seconds
 
 _SYSTEM_PROMPT = (
     "You are JARVIS, an advanced AI assistant. "
@@ -138,7 +144,7 @@ def _cv2_backend() -> int:
     return cv2.CAP_ANY
 
 
-def _probe_camera(index: int, backend: int, warmup: int = 5) -> bool:
+def _probe_camera(index: int, backend: int, warmup: int = 2) -> bool:
 
     if not _CV2:
         return False
@@ -189,7 +195,7 @@ def _capture_camera() -> tuple[bytes, str]:
     if not cap.isOpened():
         raise RuntimeError(f"Camera index {index} could not be opened.")
 
-    for _ in range(10):
+    for _ in range(3):
         cap.read()
 
     ret, frame = cap.read()
@@ -219,8 +225,10 @@ class _VisionSession:
         self._ready_evt:  threading.Event                     = threading.Event()
         self._player                                           = None
         self._lock:       threading.Lock                       = threading.Lock()
+        self._result_fut:   Optional[asyncio.Future]          = None
+        self._result_lock:  threading.Lock                       = threading.Lock()
 
-    def start(self, player=None, timeout: float = 25.0) -> None:
+    def start(self, player=None, timeout: float = 15.0) -> None:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 if player is not None:
@@ -247,6 +255,36 @@ class _VisionSession:
             self._loop,
         )
 
+    def request(self, image_bytes: bytes, mime_type: str, user_text: str, timeout: float = 8.0) -> Optional[str]:
+        if not self._loop or not self._out_queue:
+            print("[Vision] ⚠️  Session not started — dropping request")
+            return None
+        # Create a future bound to the vision session's event loop
+        async def _make_future():
+            return asyncio.Future()
+        fut = asyncio.run_coroutine_threadsafe(_make_future(), self._loop).result()
+        with self._result_lock:
+            self._result_fut = fut
+        asyncio.run_coroutine_threadsafe(
+            self._out_queue.put((image_bytes, mime_type, user_text)),
+            self._loop,
+        )
+        # Wait for the future with a timeout using the vision loop
+        async def _wait_with_timeout(f, t):
+            return await asyncio.wait_for(f, t)
+        wait_fut = asyncio.run_coroutine_threadsafe(_wait_with_timeout(fut, timeout), self._loop)
+        try:
+            return wait_fut.result()
+        except asyncio.TimeoutError:
+            print("[Vision] ⚠️  No response from model within timeout")
+            return None
+        except Exception as e:
+            print(f"[Vision] ⚠️  Error waiting for vision result: {e}")
+            return None
+        finally:
+            with self._result_lock:
+                self._result_fut = None
+
     def is_ready(self) -> bool:
         return self._session is not None
 
@@ -263,21 +301,23 @@ class _VisionSession:
             api_key=_get_api_key(),
             http_options={"api_version": "v1beta"},
         )
-        config = gtypes.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            output_audio_transcription={},
-            system_instruction=_SYSTEM_PROMPT,
-            speech_config=gtypes.SpeechConfig(
-                voice_config=gtypes.VoiceConfig(
-                    prebuilt_voice_config=gtypes.PrebuiltVoiceConfig(
-                        voice_name=DEFAULT_VOICE_NAME
-                    )
-                )
-            ),
-        )
 
         backoff = 2.0
         while True:
+            # Build config each reconnect to pick up voice changes
+            voice = _get_voice_name()
+            config = gtypes.LiveConnectConfig(
+                response_modalities=["AUDIO"],
+                output_audio_transcription={},
+                system_instruction=_SYSTEM_PROMPT,
+                speech_config=gtypes.SpeechConfig(
+                    voice_config=gtypes.VoiceConfig(
+                        prebuilt_voice_config=gtypes.PrebuiltVoiceConfig(
+                            voice_name=voice
+                        )
+                    )
+                ),
+            )
             try:
                 print("[Vision] 🔌 Connecting...")
                 async with client.aio.live.connect(
@@ -302,12 +342,15 @@ class _VisionSession:
 
             print(f"[Vision] 🔄 Reconnecting in {backoff:.0f}s...")
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 1.5, 30.0)
+            backoff = min(backoff * 1.3, 15.0)
             self._ready_evt.set()  
 
     async def _send_loop(self) -> None:
         while True:
-            image_bytes, mime_type, user_text = await self._out_queue.get()
+            try:
+                image_bytes, mime_type, user_text = await asyncio.wait_for(self._out_queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
             if not self._session:
                 print("[Vision] ⚠️  No session — dropping image")
                 continue
@@ -328,31 +371,41 @@ class _VisionSession:
 
     async def _recv_loop(self) -> None:
         transcript: list[str] = []
-        try:
-            async for response in self._session.receive():
-                if response.data:
-                    await self._audio_in.put(response.data)
+        while True:
+            try:
+                async for response in self._session.receive():
+                    if response.data:
+                        await self._audio_in.put(response.data)
 
-                sc = response.server_content
-                if not sc:
-                    continue
+                    sc = response.server_content
+                    if not sc:
+                        continue
 
-                if sc.output_transcription and sc.output_transcription.text:
-                    chunk = sc.output_transcription.text.strip()
-                    if chunk:
-                        transcript.append(chunk)
+                    if sc.output_transcription and sc.output_transcription.text:
+                        chunk = sc.output_transcription.text.strip()
+                        if chunk:
+                            transcript.append(chunk)
 
-                if sc.turn_complete:
-                    if transcript and self._player:
-                        full = re.sub(r"\s+", " ", " ".join(transcript)).strip()
-                        if full:
-                            self._player.write_log(f"Jarvis: {full}")
-                            print(f"[Vision] 💬 {full}")
-                    transcript = []
+                    if sc.turn_complete:
+                        result_text = ""
+                        if transcript:
+                            result_text = re.sub(r"\s+", " ", " ".join(transcript)).strip()
+                        if result_text and self._player:
+                            self._player.write_log(f"Jarvis: {result_text}")
+                            print(f"[Vision] 💬 {result_text}")
+                        # Set result for the pending request
+                        with self._result_lock:
+                            if self._result_fut and not self._result_fut.done():
+                                self._result_fut.set_result(result_text)
+                        transcript = []
 
-        except Exception as e:
-            print(f"[Vision] ⚠️  Recv error: {e}")
-            raise  
+                # Iterator exhausted — session closed by server, raise to trigger reconnect
+                print("[Vision] ⚠️  Receive stream ended — will reconnect")
+                raise RuntimeError("Receive stream ended")
+
+            except Exception as e:
+                print(f"[Vision] ⚠️  Recv error: {e}")
+                raise
 
     async def _play_loop(self) -> None:
         stream = sd.RawOutputStream(
@@ -381,7 +434,9 @@ _session_up   = False
 def _ensure_session(player=None) -> None:
     global _session_up
     with _session_lock:
-        if not _session_up:
+        if not _session_up or not _session.is_ready():
+            # Reset and start fresh if session died
+            _session_up = False
             _session.start(player=player)
             _session_up = True
         elif player is not None:
@@ -394,6 +449,7 @@ def screen_process(
     player=None,
     session_memory=None,
 ) -> bool:
+    global _last_capture_time
 
     params    = parameters or {}
     user_text = (params.get("text") or params.get("user_text") or "").strip()
@@ -411,6 +467,12 @@ def screen_process(
         print(f"[Vision] ❌ Could not start session: {e}")
         return False
 
+    # Cooldown to prevent excessive captures
+    now = time.time()
+    if now - _last_capture_time < _MIN_CAPTURE_INTERVAL:
+        print(f"[Vision] ⚠️  Capture too frequent — skipping")
+        return False
+
     try:
         if angle == "camera":
             image_bytes, mime_type = _capture_camera()
@@ -418,11 +480,15 @@ def screen_process(
         else:
             image_bytes, mime_type = _capture_screen()
             print(f"[Vision] 🖥️  Screen: {len(image_bytes):,} bytes")
+        _last_capture_time = now
     except Exception as e:
         print(f"[Vision] ❌ Capture error: {e}")
         return False
 
-    _session.analyze(image_bytes, mime_type, user_text)
+    result = _session.request(image_bytes, mime_type, user_text)
+    if result is None:
+        print("[Vision] ⚠️  No vision result")
+        return False
     return True
 
 

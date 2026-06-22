@@ -1,0 +1,1 @@
+- [Awareness Engine Enhanced with VS Code and Related Project Detection](memory/awareness-engine-enhanced.md) — Added two new contextual checks to the awareness engine: detecting active VS Code processes and checking for related git repositories in parent directory, surfacing subtle presence popups to reinforce JARVIS's awareness of user context.

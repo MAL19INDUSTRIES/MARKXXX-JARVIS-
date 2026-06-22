@@ -25,5 +25,9 @@ youtube-transcript-api
 fastapi
 uvicorn[standard]
 keyring
+# External TTS providers
+elevenlabs
+openai
+soundfile
 
 

@@ -32,9 +32,16 @@ htmlcov/
 # --- Environment / secrets ---
 .env
 .env.*
+!.env.example
 
 # If your app uses this JSON for local config/secrets
 config/api_keys.json
+config/ui_settings.json
+config/layout_settings.json
+
+# Local memory and task history
+memory/long_term.json
+memory/task_history.json
 
 # OS / editor
 .DS_Store
@@ -57,3 +64,17 @@ status.json
 
 
 tmp/
+.blackboxcli/
+.sixth/
+*.blackboxcli/
+*.sixth/
+
+# Local backup snapshots / experiments
+*.before_*
+*.broken_*
+*.before_remove
+*.before_remove_*
+*.codex_ui_control_working
+*.codex_*_working
+tutorial_overlay.py.before_remove
+*.before_tutorial_overlay
